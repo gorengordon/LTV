@@ -4,7 +4,8 @@ import pickle
 process_flow = {
     'get_stats': True,
     'get_priors': True,
-    'update_posteriors': True
+    'update_posteriors': True,
+    'calc_ltv': True
 }
 
 filename = data_path + 'Ground_truth/ref-20160401.csv'
@@ -12,7 +13,7 @@ results_path = '../../LTV/results/'
 
 if process_flow['get_stats']:
     print('get_stats...')
-    the_class = LtvClass(filename=filename, max_count=10000, target_periods=[7,30,90])
+    the_class = LtvClass(filename=filename, target_periods=[7,30,90], max_count=10000, max_users=10000)
     the_class.get_stats()
     with open(results_path + 'ltv_class.pkl', 'wb') as output:
         pickle.dump(the_class, output, pickle.HIGHEST_PROTOCOL)
@@ -36,11 +37,21 @@ if process_flow['update_posteriors']:
     with open(results_path + 'ltv_class.pkl', 'wb') as output:
         pickle.dump(the_class, output, pickle.HIGHEST_PROTOCOL)
 
+if process_flow['calc_ltv']:
+    print('calc ltv...')
+    with open(results_path + 'ltv_class.pkl', 'rb') as input:
+        the_class = pickle.load(input)
+    the_class.get_ltv()
+    with open(results_path + 'ltv_class.pkl', 'wb') as output:
+        pickle.dump(the_class, output, pickle.HIGHEST_PROTOCOL)
+
 print('loading results...')
 with open(results_path + 'ltv_class.pkl', 'rb') as input:
     the_class = pickle.load(input)
 print('done!')
-print(the_class.user_data)
+for u in the_class.user_data.values():
+    print(u['ltv'])
+
 # for p in the_class.priors:
 #     print(np.log(p))
 #

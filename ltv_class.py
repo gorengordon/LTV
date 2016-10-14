@@ -1,6 +1,7 @@
 import csv
 import numpy as np
 import copy
+from operator import mul
 
 
 def get_number_of_csv_lines(filename):
@@ -17,9 +18,10 @@ period_names = {'week': 7, 'month': 30}
 
 class LtvClass:
 
-    def __init__(self, filename, max_count=1000, target_periods=None):
+    def __init__(self, filename, max_count=1000, target_periods=None, max_users=1000):
         self.filename = filename
         self.max_count = max_count
+        self.max_users = max_users
         self.n_bins = 20  # number of bins in distribution
 
         self.prob = {}  # prob: key=id, value = []_num_target_periods = numpy p(amount)
@@ -97,6 +99,13 @@ class LtvClass:
         ))
         return max([min([the_bin, self.n_bins-1]), 0])
 
+    def convert_bin_to_value(self, b, value_stats):
+        # log-distribution
+        min_value = np.log(value_stats['min'] + 1)
+        max_value = np.log(value_stats['max'] + 1)
+        log_value = min_value + (max_value - min_value) * float(b) / float(self.n_bins - 1.0)
+        return np.exp(log_value) - 1.0
+
     def update_priors(self):
         with open(self.filename, 'rb') as csv_file:
             file_reader = csv.reader(csv_file, delimiter=',')
@@ -122,12 +131,18 @@ class LtvClass:
             period_index = self.target_periods.index(period_names[s[2]])
             more_less = s[1][:4] == 'more'
             report_value = float(s[1][4:])
+            prob_less_in_prior = self.get_prob_of_less_than_value(period_index, self.priors[period_index], report_value)
+            if more_less:
+                query_prob = 1 - prob_less_in_prior
+            else:
+                query_prob = prob_less_in_prior
             self.report_data.append({
                 'filename': rf,
                 'type': s[0],
                 'period_index': period_index,
                 'more_less': more_less,
                 'report_value': report_value,
+                'prob_in_prior': query_prob
             })
 
     def get_users(self):
@@ -139,8 +154,12 @@ class LtvClass:
                     user_id = row[0]
                     if user_id not in self.user_data:
                         self.user_data[user_id] = {
-                            'prob': copy.deepcopy(self.priors)
+                            'prob': copy.deepcopy(self.priors),
+                            'ltv': np.zeros([self.num_target_periods])
                         }
+
+                        if self.max_users > 0 and len(self.user_data) > self.max_users:
+                            return
 
     def update_posteriors(self):
         for rd in self.report_data:
@@ -149,16 +168,48 @@ class LtvClass:
                 for row in report_file:
                     user_id = row[0]
                     the_prob = 0.5 #float(row[2])  # missing ------------------------------------------------------
+
                     self.the_update(user_id, the_prob, rd)
 
     def the_update(self, user_id, the_prob, rd):
-        this_prior = self.user_data[user_id]['prob'][rd['period_index']]
+        try:
+            this_prior = self.user_data[user_id]['prob'][rd['period_index']]
+        except:
+            # print('the user: ', user_id, ' is not in the first ', self.max_users, ' users found')
+            return
+
         report_value = rd['report_value']
         report_value_bin = self.convert_value_to_bin(report_value, self.value_stats[rd['period_index']])
 
         # Bayes
         the_posterior = copy.deepcopy(this_prior)
-        for p in the_posterior:
-            p = p +1 # CHANGE
+        for b, p in enumerate(the_posterior):
+            if rd['more_less']:
+                if b > report_value_bin:
+                    p *= the_prob / rd['prob_in_prior']
+                else:
+                    p *= (1 - the_prob) / (1 - rd['prob_in_prior'])
+            else:
+                if b < report_value_bin:
+                    p *= the_prob / rd['prob_in_prior']
+                else:
+                    p *= (1 - the_prob) / (1 - rd['prob_in_prior'])
 
         self.user_data[user_id]['prob'][rd['period_index']] = the_posterior
+
+    def get_prob_of_less_than_value(self, period_index, prior, value):
+        value_bin = self.convert_value_to_bin(value, self.value_stats[period_index])
+        prob_list = [prior[x] for x in range(value_bin)]
+        return np.prod(prob_list)
+
+    def get_value_from_prob(self, prob, period_index):
+        value = 0
+        for b, p in enumerate(prob):
+            value += p * self.convert_bin_to_value(b, self.value_stats[period_index])
+        return value
+
+    def get_ltv(self):
+        for u in self.user_data.values():
+            for i, prob in enumerate(u['prob']):
+                u['ltv'][i] = self.get_value_from_prob(prob, i)
+
